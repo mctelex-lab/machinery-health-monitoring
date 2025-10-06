@@ -1,12 +1,13 @@
 # ==============================================================
 # ⚓ Equipment Health Condition Monitoring Prediction for Naval Ships
-# Streamlit Web Application
+# Streamlit Web Application (Final Enhanced Version)
 # ==============================================================
-# Upload CSV/Excel → Compute Health Index (HI)
-# Visualize results → Generate interpretive PDF report
-# ==============================================================
+import sys
+import os
+import tempfile
+from datetime import datetime
+from io import BytesIO
 
-import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 
 import streamlit as st
@@ -14,54 +15,50 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from io import BytesIO
 from fpdf import FPDF
-from evaluate_hi import evaluate_dataframe
 
-# --------------------------------------------------------------
-# Streamlit Page Config
-# --------------------------------------------------------------
+from evaluate_hi import evaluate_dataframe  # ensure src/evaluate_hi.py exists
+
+# ==============================================================
+# PAGE CONFIGURATION
+# ==============================================================
 st.set_page_config(
-    page_title="⚓ Equipment Health Monitoring | Naval Ships",
+    page_title="⚓ Naval Equipment Health Monitoring System",
     layout="wide",
     page_icon="⚓"
 )
 
-# --------------------------------------------------------------
-# Title & Caption
-# --------------------------------------------------------------
 st.title("⚓ Equipment Health Condition Monitoring Prediction for Naval Ships")
-st.caption("""
-A predictive maintenance application for analyzing machinery health conditions onboard naval vessels.  
-Upload operational data, compute Health Index (HI), visualize system health, and generate an interpretive performance report.
-""")
+st.caption(
+    "A predictive maintenance tool for analyzing machinery health onboard naval vessels. "
+    "Upload operational data (CSV/XLSX), compute Health Index (HI), visualize insights, "
+    "and download a confidential PDF report."
+)
 
-# --------------------------------------------------------------
-# Sidebar Section
-# --------------------------------------------------------------
+# ==============================================================
+# SIDEBAR
+# ==============================================================
 with st.sidebar:
     st.header("📘 Resources & Actions")
     st.markdown("[🌐 View Source on GitHub](https://github.com/mctelex-lab/manual-health-monitoring)")
-
     st.markdown("---")
     st.header("🧩 App Features")
-    st.markdown("""
-- 📊 Automatic Health Index computation  
-- ⚙️ Multi-system & indicator analysis  
-- 🧭 Predicted condition (Healthy/Warning/Critical)  
-- 🧠 Auto-generated PDF report with interpretation  
-- 📈 Visual analytics for decision-making  
-""")
-
+    st.markdown(
+        "- 📊 Automatic Health Index computation\n"
+        "- ⚙️ Multi-system & indicator analysis\n"
+        "- 🧭 Predicted condition (Healthy/Warning/Critical)\n"
+        "- 📄 Auto-generated PDF report with charts\n"
+        "- ⬇️ Exportable CSV of results"
+    )
     st.markdown("---")
     st.header("🆘 About")
-    st.info("Developed by **Dr. Awujoola Olalekan** for predictive maintenance and naval engineering analytics using Python and Streamlit.")
+    st.info("Developed by **Dr. Awujoola Olalekan** — Predictive Maintenance and Naval Engineering.")
 
-# --------------------------------------------------------------
-# Example Dataset Generator
-# --------------------------------------------------------------
+# ==============================================================
+# EXAMPLE DATASET GENERATOR
+# ==============================================================
 st.subheader("📁 Example Dataset Generator")
-st.markdown("Click below to download a ready-to-use dataset for testing the system.")
+st.markdown("Download a ready-to-use CSV sample if you don’t have a dataset yet.")
 
 if st.button("📦 Generate Example Dataset"):
     sample_data = {
@@ -89,79 +86,123 @@ if st.button("📦 Generate Example Dataset"):
 
 st.markdown("---")
 
-# --------------------------------------------------------------
-# File Upload Section
-# --------------------------------------------------------------
+# ==============================================================
+# FILE UPLOAD
+# ==============================================================
 uploaded_file = st.file_uploader("📂 Upload your CSV or Excel file", type=["csv", "xlsx"])
 
-# --------------------------------------------------------------
-# Helper: Generate interpretive suggestions
-# --------------------------------------------------------------
+# ==============================================================
+# HELPER FUNCTIONS
+# ==============================================================
 def interpret_results(results_df):
-    status_counts = results_df["Predicted_Status"].value_counts().to_dict()
-    insights = []
-    if status_counts.get("Critical", 0) > 0:
-        insights.append("⚠️ Several systems are in *Critical* state — immediate inspection and possible shutdown are recommended.")
-    if status_counts.get("Warning", 0) > 0:
-        insights.append("🔧 Some equipment show *Warning* status — schedule preventive maintenance soon.")
-    if status_counts.get("Healthy", 0) > 0:
-        insights.append("✅ Most systems are *Healthy* — continue routine checks and oil analysis.")
-    if not insights:
-        insights.append("ℹ️ No valid readings available to interpret.")
-    return "\n".join(insights)
+    if "Predicted_Status" not in results_df.columns:
+        return "ℹ️ No predictions available to interpret."
+    counts = results_df["Predicted_Status"].value_counts().to_dict()
+    notes = []
+    if counts.get("Critical", 0) > 0:
+        notes.append("⚠️ Critical: Immediate inspection required for critical equipment.")
+    if counts.get("Warning", 0) > 0:
+        notes.append("🔧 Warning: Schedule preventive maintenance for affected systems.")
+    if counts.get("Healthy", 0) > 0:
+        notes.append("✅ Healthy: Most systems are stable. Continue periodic monitoring.")
+    return "\n".join(notes) if notes else "ℹ️ No valid readings available to interpret."
 
-# --------------------------------------------------------------
-# Helper: Generate PDF Report
-# --------------------------------------------------------------
-def generate_pdf_report(metrics_df, interpretation_text):
+def save_figure_to_temp(fig, suffix=".png"):
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    fig.savefig(tmp.name, bbox_inches="tight")
+    plt.close(fig)
+    return tmp.name
+
+def generate_pdf_report_with_charts(metrics_df, interpretation, chart_paths):
     pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # ================= COVER PAGE =================
     pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "⚓ Equipment Health Condition Monitoring Report", ln=True, align="C")
-
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 10, "Summary of Model Performance Metrics", ln=True)
-    pdf.ln(5)
-
-    pdf.set_font("Arial", "", 10)
-    for i, row in metrics_df.iterrows():
-        pdf.cell(0, 8, f"{row['Metric']}: {row['Value']:.3f}", ln=True)
-
-    pdf.ln(5)
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 10, "Interpretation and Recommendations", ln=True)
-    pdf.set_font("Arial", "", 10)
-    pdf.multi_cell(0, 8, interpretation_text)
-
+    pdf.set_font("Arial", "B", 18)
+    pdf.cell(0, 12, "⚓ NAVAL MACHINERY HEALTH CONDITION REPORT", ln=True, align="C")
+    pdf.ln(8)
+    pdf.set_font("Arial", "", 14)
+    pdf.cell(0, 10, "Predictive Maintenance Model Summary", ln=True, align="C")
+    pdf.ln(6)
+    pdf.set_font("Arial", "I", 11)
+    pdf.multi_cell(0, 8, "Automated Equipment Condition Assessment for Naval Ships", align="C")
+    pdf.ln(8)
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(0, 8, f"Date Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="C")
     pdf.ln(10)
+    pdf.set_font("Arial", "B", 11)
+    pdf.cell(0, 8, "Prepared by: Navy Capt. Daya Abdullahi & Dr. Awujoola Olalekan J", ln=True, align="C")
+    pdf.ln(6)
+    pdf.set_font("Arial", "I", 10)
+    pdf.multi_cell(
+        0, 7,
+        "Confidential: This report contains sensitive technical and operational data pertaining to naval vessel equipment. "
+        "Unauthorized distribution or duplication is strictly prohibited.",
+        align="C"
+    )
+
+    # ================= DETAILED REPORT =================
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 10, "📊 Model Performance Metrics", ln=True)
+    pdf.ln(4)
+    pdf.set_font("Arial", "", 11)
+    for _, row in metrics_df.iterrows():
+        val = "N/A" if pd.isna(row["Value"]) else f"{row['Value']:.3f}"
+        pdf.cell(0, 8, f"{row['Metric']}: {val}", ln=True)
+    pdf.ln(6)
+
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 8, "🧠 Interpretation & Recommendations", ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 7, interpretation)
+    pdf.ln(6)
+
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 8, "📈 Analytical Visualizations", ln=True)
+    pdf.ln(4)
+
+    for path in chart_paths:
+        try:
+            pdf.image(path, x=10, w=190)
+            pdf.ln(6)
+        except:
+            continue
+
+    pdf.ln(4)
     pdf.set_font("Arial", "I", 9)
     pdf.cell(0, 8, "Generated using Predictive Maintenance AI System", ln=True)
     pdf.cell(0, 8, "Developed by Dr. Awujoola Olalekan", ln=True)
+
+    # PAGE NUMBERING
+    for i in range(1, pdf.page_no() + 1):
+        pdf.page = i
+        pdf.set_y(-15)
+        pdf.set_font("Arial", "I", 8)
+        pdf.cell(0, 10, f"Page {i} of {pdf.page_no()}", 0, 0, "C")
+
     output = BytesIO()
     pdf.output(output)
     return output.getvalue()
 
-# --------------------------------------------------------------
-# Main Logic
-# --------------------------------------------------------------
+# ==============================================================
+# MAIN APP LOGIC
+# ==============================================================
 if uploaded_file:
     try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file, encoding="latin1")
-        else:
-            df = pd.read_excel(uploaded_file)
-
+        df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
         st.subheader("📋 Uploaded Data Preview")
         st.dataframe(df.head())
 
-        # Compute HI
         results = evaluate_dataframe(df)
         st.subheader("🔍 Computed Health Index and Predicted Status")
-        st.dataframe(results.head())
+        st.dataframe(results.head(10))
 
-        # Metrics
+        # METRICS
         total = len(results)
-        evaluated = int(results["Health_Index"].notna().sum())
+        evaluated = results["Health_Index"].notna().sum()
+        coverage = (evaluated / total * 100) if total else 0
         mean_hi = results["Health_Index"].mean()
         std_hi = results["Health_Index"].std()
         skewness = results["Health_Index"].skew()
@@ -169,42 +210,64 @@ if uploaded_file:
 
         metrics = pd.DataFrame({
             "Metric": ["Total Readings", "Evaluated Readings", "Coverage (%)", "Mean HI", "Std Dev HI", "Skewness", "Kurtosis"],
-            "Value": [total, evaluated, (evaluated / total * 100 if total > 0 else 0), mean_hi, std_hi, skewness, kurtosis]
+            "Value": [total, evaluated, coverage, mean_hi, std_hi, skewness, kurtosis]
         })
         st.subheader("📊 Model Performance Metrics")
         st.dataframe(metrics.style.format(precision=3))
 
-        # Visualization
-        st.subheader("📈 Health Index Distribution")
-        fig, ax = plt.subplots(figsize=(8, 4))
-        sns.histplot(results["Health_Index"].dropna(), bins=10, kde=True, color="teal", ax=ax)
-        ax.set_xlabel("Health Index (HI)")
-        ax.set_ylabel("Frequency")
-        st.pyplot(fig)
+        # CHARTS
+        chart_paths = []
 
-        st.subheader("🧭 Predicted Status Breakdown")
+        # HI Distribution
+        fig1, ax1 = plt.subplots(figsize=(8, 4))
+        sns.histplot(results["Health_Index"], bins=10, kde=True, color="teal", ax=ax1)
+        ax1.set_xlabel("Health Index (HI)")
+        ax1.set_ylabel("Frequency")
+        st.pyplot(fig1)
+        chart_paths.append(save_figure_to_temp(fig1))
+
+        # Status Pie Chart
         fig2, ax2 = plt.subplots(figsize=(5, 5))
-        results["Predicted_Status"].value_counts().plot.pie(
-            autopct="%1.1f%%", startangle=90, colors=["#4CAF50", "#FFC107", "#F44336", "#9E9E9E"], ax=ax2
-        )
+        results["Predicted_Status"].value_counts().plot.pie(autopct="%1.1f%%", startangle=90, ax=ax2)
         ax2.set_ylabel("")
         st.pyplot(fig2)
+        chart_paths.append(save_figure_to_temp(fig2))
+
+        # Average HI per System
+        fig3, ax3 = plt.subplots(figsize=(10, 5))
+        sns.barplot(data=results, x="SYSTEM", y="Health_Index", ax=ax3, palette="coolwarm")
+        plt.xticks(rotation=45)
+        st.pyplot(fig3)
+        chart_paths.append(save_figure_to_temp(fig3))
 
         # Interpretation
         interpretation = interpret_results(results)
         st.subheader("🧠 Model Interpretation & Suggested Actions")
         st.markdown(interpretation)
 
-        # PDF Report Generator
+        # PDF Report
         st.subheader("📄 Generate PDF Report")
-        if st.button("🖨️ Download Model Report (PDF)"):
-            pdf_bytes = generate_pdf_report(metrics, interpretation)
+        if st.button("🖨️ Download Full Report as PDF"):
+            pdf_data = generate_pdf_report_with_charts(metrics, interpretation, chart_paths)
             st.download_button(
-                label="⬇️ Click to Download Report",
-                data=pdf_bytes,
-                file_name="Health_Monitoring_Report.pdf",
+                label="⬇️ Download PDF Report",
+                data=pdf_data,
+                file_name="Naval_Health_Monitoring_Report.pdf",
                 mime="application/pdf"
             )
+
+        # Cleanup temporary chart files
+        for path in chart_paths:
+            try:
+                os.remove(path)
+            except:
+                pass
+
+        # CSV Download
+        st.subheader("⬇️ Download Evaluated Results")
+        buffer = BytesIO()
+        results.to_csv(buffer, index=False)
+        st.download_button("Download Results CSV", buffer.getvalue(), "evaluated_health_results.csv", "text/csv")
 
     except Exception as e:
         st.error(f"❌ Error processing file: {e}")
