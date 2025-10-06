@@ -1,107 +1,113 @@
 # ==============================================================
-# 🧠 Evaluate Health Index (HI) for Naval Machinery Systems
+# ⚓ evaluate_hi.py
 # ==============================================================
-# This module reads a machinery dataset, applies parameter thresholds,
-# computes a normalized Health Index (HI), and assigns a condition label.
+# This module computes Health Index (HI) and assigns operational
+# Status categories (Healthy, Warning, Critical) based on input
+# datasets from naval machinery.
 # ==============================================================
 
 import pandas as pd
 import numpy as np
-import re
 
 # --------------------------------------------------------------
-# 1️⃣ Helper function to normalize column names
+# ⚙️ Core Health Evaluation Function
 # --------------------------------------------------------------
-def normalize_name(name: str) -> str:
-    return re.sub(r'[^a-z0-9]', '', str(name).lower())
 
+def evaluate_dataframe(df):
+    """
+    Compute Health Index (HI) and Status for a given dataset.
+    Expects the following (at minimum) columns:
+        - SYNTHETIC_VALUE
+        - MIN_MAX_THRESHOLDS
+    Returns:
+        DataFrame with added 'Health_Index' and 'Status' columns
+    """
 
-# --------------------------------------------------------------
-# 2️⃣ Thresholds (adjustable domain-specific ranges)
-# --------------------------------------------------------------
-THRESHOLDS = {
-    'lubeoilpressurebar': (3.5, 6.0),
-    'lubeoiltemp°c': (60, 90),
-    'exhaustgastemp°c': (350, 450),
-    'oiltemp°c': (60, 85),
-    'shaftvibrationmms': (0.5, 2.5),
-    'bearingtemp°c': (50, 80),
-    'voltagev': (420, 450),
-    'frequencyhz': (59, 61),
-    'load': (30, 85),
-    'flowmh': (70, 100),
-    'dischargepressurebar': (2.5, 4.5),
-    'airpressurebar': (24, 30),
-    'dischargetemp°c': (90, 110),
-    'hydraulicpressurebar': (135, 160),
-    'rudderresponses': (0.8, 1.2),
-    'detectorresponses': (0, 5),
-    'co2cylinderpressurebar': (160, 200),
-    'cabintemp°c': (20, 26),
-    'compressorcurrenta': (25, 35),
-    'outputm³day': (10, 15)
-}
-NORM_THRESHOLDS = {normalize_name(k): v for k, v in THRESHOLDS.items()}
+    df = df.copy()  # Work on a safe copy
 
-
-# --------------------------------------------------------------
-# 3️⃣ Health Index computation for a single reading
-# --------------------------------------------------------------
-def evaluate_health_index(row: pd.Series, warn_margin: float = 0.1):
-    scores = []
-    for col in row.index:
-        val = row[col]
-        if pd.isna(val):
-            continue
-        try:
-            num = float(str(val).split()[0])
-        except:
-            continue
-
-        key = normalize_name(col)
-        if key not in NORM_THRESHOLDS:
-            continue
-
-        low, high = NORM_THRESHOLDS[key]
-        rng = high - low
-        if low <= num <= high:
-            score = 1.0
-        elif (low - warn_margin * rng) <= num <= (high + warn_margin * rng):
-            score = 0.5
-        else:
-            score = 0.0
-        scores.append(score)
-
-    if not scores:
-        return np.nan, "Unknown"
-
-    hi = np.mean(scores)
-    if hi >= 0.8:
-        status = "Healthy"
-    elif hi >= 0.5:
-        status = "Warning"
+    # ----------------------------------------------------------
+    # 🧩 Clean numeric fields
+    # ----------------------------------------------------------
+    if "SYNTHETIC_VALUE" in df.columns:
+        df["SYNTHETIC_VALUE"] = (
+            pd.to_numeric(df["SYNTHETIC_VALUE"], errors="coerce")
+        )
     else:
-        status = "Critical"
-    return hi, status
+        raise ValueError("❌ Missing 'SYNTHETIC_VALUE' column in dataset.")
 
+    # Extract numeric ranges from MIN_MAX_THRESHOLDS column
+    def parse_threshold(value):
+        if isinstance(value, str):
+            parts = value.replace("–", "-").split("-")
+            if len(parts) == 2:
+                try:
+                    low = float(parts[0].strip())
+                    high = float(parts[1].strip())
+                    return low, high
+                except ValueError:
+                    return np.nan, np.nan
+        return np.nan, np.nan
+
+    thresholds = df["MIN_MAX_THRESHOLDS"].apply(parse_threshold)
+    df["MIN_TH"] = thresholds.apply(lambda x: x[0])
+    df["MAX_TH"] = thresholds.apply(lambda x: x[1])
+
+    # ----------------------------------------------------------
+    # 📈 Calculate Health Index
+    # ----------------------------------------------------------
+    def compute_health_index(row):
+        val, low, high = row["SYNTHETIC_VALUE"], row["MIN_TH"], row["MAX_TH"]
+
+        if pd.isna(val) or pd.isna(low) or pd.isna(high):
+            return np.nan
+
+        # Define scoring logic
+        if low <= val <= high:
+            return 1.0  # optimal
+        elif (low - 0.1 * (high - low)) <= val <= (high + 0.1 * (high - low)):
+            return 0.6  # warning range
+        else:
+            return 0.2  # critical range
+
+    df["Health_Index"] = df.apply(compute_health_index, axis=1)
+
+    # ----------------------------------------------------------
+    # 🚨 Derive Health Status from HI
+    # ----------------------------------------------------------
+    df["Status"] = pd.cut(
+        df["Health_Index"],
+        bins=[-np.inf, 0.5, 0.8, np.inf],
+        labels=["Critical", "Warning", "Healthy"]
+    )
+
+    # ----------------------------------------------------------
+    # 🧮 Optional Summary Statistics
+    # ----------------------------------------------------------
+    hi_stats = {
+        "Mean HI": round(df["Health_Index"].mean(), 3),
+        "Std Dev HI": round(df["Health_Index"].std(), 3),
+        "Skewness": round(df["Health_Index"].skew(), 3),
+        "Kurtosis": round(df["Health_Index"].kurtosis(), 3),
+        "Total Evaluated": int(df["Health_Index"].notna().sum()),
+    }
+
+    # Attach summary metrics to the DataFrame for easy access in the app
+    df.attrs["metrics"] = hi_stats
+
+    return df
 
 # --------------------------------------------------------------
-# 4️⃣ Main evaluation entry point for a dataframe
+# 🧠 Example Usage (for local testing only)
 # --------------------------------------------------------------
-def evaluate_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    df_eval = df.copy()
-
-    # Identify numeric or relevant columns
-    numeric_like = [c for c in df.columns if any(k in normalize_name(c) for k in NORM_THRESHOLDS.keys())]
-
-    # Compute HI for each row
-    hi_list, status_list = [], []
-    for _, row in df[numeric_like].iterrows():
-        hi, st = evaluate_health_index(row)
-        hi_list.append(hi)
-        status_list.append(st)
-
-    df_eval["Health_Index"] = hi_list
-    df_eval["Predicted_Status"] = status_list
-
-    return df_eval
+if __name__ == "__main__":
+    sample_data = {
+        "SYSTEM": ["Propulsion", "Cooling", "Electrical"],
+        "EQUIPMENT": ["Main Engine", "Pump", "Generator"],
+        "HEALTH_INDICATOR_HI": ["Oil pressure", "Water temp", "Voltage"],
+        "SYNTHETIC_VALUE": [4.3, 92, 430],
+        "MIN_MAX_THRESHOLDS": ["3.5-6.0", "60-90", "420-450"],
+    }
+    df_sample = pd.DataFrame(sample_data)
+    evaluated = evaluate_dataframe(df_sample)
+    print(evaluated)
+    print("\nSummary Metrics:", evaluated.attrs["metrics"])
