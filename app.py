@@ -1,6 +1,7 @@
 # ==============================================================
 # ⚓ Equipment Health Condition Monitoring Prediction for Naval Ships
 # ==============================================================
+
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))  # ✅ Allow local src imports
 
@@ -12,6 +13,7 @@ import seaborn as sns
 import chardet
 from io import BytesIO
 from fpdf import FPDF
+from datetime import datetime, timedelta
 from evaluate_hi import evaluate_dataframe  # local evaluation module
 
 # --------------------------------------------------------------
@@ -29,18 +31,19 @@ st.set_page_config(
 st.sidebar.title("⚙️ Navigation")
 page = st.sidebar.radio("Select a section", [
     "Upload & Analyze Data",
+    "Maintenance Log History",
     "Example Dataset Generator",
     "About"
 ])
 
 # --------------------------------------------------------------
-# 🧾 Maintenance Suggestion Function
+# 🧭 Maintenance Suggestion Function
 # --------------------------------------------------------------
 def maintenance_suggestions(results):
-    """Generate maintenance recommendations based on status patterns."""
+    """Generate maintenance recommendations based on system status."""
     suggestions = []
     if "Status" not in results.columns:
-        return ["No status data available for suggestions."]
+        return ["No status data available for recommendations."]
     
     total = len(results)
     healthy = (results["Status"] == "Healthy").sum()
@@ -48,61 +51,112 @@ def maintenance_suggestions(results):
     critical = (results["Status"] == "Critical").sum()
 
     if critical > 0:
-        suggestions.append("⚠️ Immediate inspection is required for systems flagged as Critical. Verify oil pressure, temperature, and vibration levels.")
+        suggestions.append("⚠️ Immediate inspection required for systems flagged as Critical. Check oil, temperature, and vibration.")
     if warning > 0:
-        suggestions.append("🧰 Schedule maintenance for equipment in the Warning state within the next operational cycle.")
+        suggestions.append("🧰 Schedule maintenance for Warning systems within the next operational cycle.")
     if healthy / total > 0.8:
-        suggestions.append("✅ Most systems are healthy. Continue routine checks and oil level verification.")
+        suggestions.append("✅ Majority of systems are healthy. Maintain regular inspection routine.")
     if results["Health_Index"].mean() < 0.6:
-        suggestions.append("🔧 Overall Health Index is below standard threshold. Review maintenance logs and inspect cooling and lubrication systems.")
+        suggestions.append("🔧 Overall Health Index below standard. Inspect lubrication and cooling systems.")
     if not suggestions:
-        suggestions.append("🟢 All systems are within optimal performance range. Maintain current operating protocols.")
+        suggestions.append("🟢 All systems are within optimal condition. Continue current maintenance routine.")
 
     return suggestions
 
 # --------------------------------------------------------------
-# 🧾 PDF Report Generator
+# 📄 Enhanced PDF Report Generator with Maintenance Schedule
 # --------------------------------------------------------------
 def generate_pdf_report(metrics, charts, suggestions, author="Navy Capt Daya Abdullahi and Dr. Awujoola Olalekan J"):
     pdf = FPDF()
     pdf.add_page()
 
-    # Cover Page
     pdf.set_font("Arial", "B", 18)
     pdf.cell(0, 10, "⚓ NAVAL MACHINERY HEALTH CONDITION REPORT", ln=True, align="C")
     pdf.ln(10)
-    pdf.set_font("Arial", "", 12)
-    pdf.multi_cell(0, 10, f"Predictive Maintenance Model Summary\n\nAuthor: {author}")
-    pdf.ln(10)
-    pdf.cell(0, 10, "Confidential - For Naval Technical Use Only", ln=True, align="C")
 
-    # Detailed Report
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "📊 Model Performance Metrics", ln=True)
+    pdf.set_font("Arial", "", 12)
+    pdf.multi_cell(0, 8,
+        "This report presents the predictive health evaluation of naval ship machinery "
+        "based on uploaded operational parameters. The computed Health Index (HI) and "
+        "equipment status distribution provide actionable insights into system reliability "
+        "and readiness for continued operations.\n"
+    )
     pdf.ln(5)
+    pdf.cell(0, 10, f"Prepared by: {author}", ln=True, align="L")
+    pdf.cell(0, 10, f"Date: {datetime.now().strftime('%B %d, %Y')}", ln=True, align="L")
+    pdf.ln(8)
+    pdf.set_font("Arial", "I", 11)
+    pdf.multi_cell(0, 8, "Confidential - For Naval Technical Command Internal Use Only.")
+    pdf.add_page()
+
+    # Model summary
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "📊 Model Performance Summary", ln=True)
+    pdf.ln(5)
+
     pdf.set_font("Arial", "", 12)
+    pdf.multi_cell(0, 8,
+        "The predictive model evaluates equipment health using operational indicators. "
+        "The derived Health Index (HI) indicates machinery condition categorized as "
+        "Healthy, Warning, or Critical.\n"
+    )
+
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 10, "Computed Metrics:", ln=True)
+    pdf.set_font("Arial", "", 11)
     for k, v in metrics.items():
-        pdf.cell(0, 8, f"{k}: {v}", ln=True)
+        pdf.cell(0, 8, f"• {k}: {v}", ln=True)
+
+    # Maintenance schedule logic
+    mean_hi = metrics.get("Mean HI", 0)
+    if mean_hi >= 0.8:
+        next_maint = datetime.now() + timedelta(days=60)
+        interval = "60 days (Excellent condition)"
+    elif mean_hi >= 0.6:
+        next_maint = datetime.now() + timedelta(days=30)
+        interval = "30 days (Satisfactory condition)"
+    else:
+        next_maint = datetime.now() + timedelta(days=7)
+        interval = "7 days (Immediate attention required)"
 
     pdf.ln(10)
-    pdf.set_font("Arial", "B", 13)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "Maintenance Schedule Recommendation:", ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(0, 8, f"Next Inspection Date: {next_maint.strftime('%B %d, %Y')}", ln=True)
+    pdf.cell(0, 8, f"Suggested Interval: {interval}", ln=True)
+    pdf.ln(10)
+
+    interpret = (
+        "Excellent operational condition — continue routine checks." if mean_hi > 0.8 else
+        "Moderate condition — monitor specific indicators regularly." if mean_hi > 0.6 else
+        "Critical condition detected — initiate maintenance immediately."
+    )
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "Interpretation:", ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 8, f"Based on the overall Health Index, the fleet exhibits: {interpret}")
+    pdf.ln(10)
+
+    # Recommendations
+    pdf.set_font("Arial", "B", 14)
     pdf.cell(0, 10, "🧭 Maintenance Recommendations", ln=True)
     pdf.set_font("Arial", "", 11)
     for s in suggestions:
         pdf.multi_cell(0, 8, "- " + s)
 
-    pdf.ln(10)
-    pdf.set_font("Arial", "B", 12)
+    # Charts
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 14)
     pdf.cell(0, 10, "📈 Charts and Visualizations", ln=True)
+    pdf.ln(5)
     for name, chart_data in charts.items():
-        pdf.ln(5)
         pdf.set_font("Arial", "I", 11)
         pdf.cell(0, 10, name, ln=True)
         pdf.image(chart_data, x=15, w=180)
         pdf.ln(10)
 
-    pdf.set_y(-30)
+    pdf.set_y(-25)
     pdf.set_font("Arial", "I", 9)
     pdf.cell(0, 10, "Generated via Streamlit | Naval Technical Command | Confidential", align="C")
 
@@ -116,16 +170,38 @@ def generate_pdf_report(metrics, charts, suggestions, author="Navy Capt Daya Abd
 # --------------------------------------------------------------
 def generate_example_dataset():
     data = {
-        "SYSTEM": ["Propulsion", "Cooling", "Electrical", "Hydraulic", "Air System"],
-        "EQUIPMENT": ["Main Engine", "Cooling Pump", "Generator", "Hydraulic Pump", "Air Compressor"],
-        "HEALTH_INDICATOR_HI": ["Lube oil pressure (bar)", "Water temp (°C)", "Voltage (V)", "Pressure (bar)", "Air Pressure (bar)"],
-        "SYNTHETIC_VALUE": [4.2, 72, 440, 150, 28],
-        "MIN_MAX_THRESHOLDS": ["3.5-6.0", "60-85", "420-450", "135-160", "24-30"],
-        "WORKING_VALUE_ONBOARD": ["3.6 bar", "70 °C", "435 V", "145 bar", "29 bar"],
-        "REMARKS": ["OK", "Normal", "Normal", "Normal", "Normal"],
-        "Actual_Status": ["Healthy", "Healthy", "Healthy", "Healthy", "Healthy"]
+        "SYSTEM": ["Propulsion", "Cooling", "Electrical"],
+        "EQUIPMENT": ["Main Engine", "Cooling Pump", "Generator"],
+        "HEALTH_INDICATOR_HI": ["Oil pressure", "Water temp", "Voltage"],
+        "SYNTHETIC_VALUE": [4.2, 72, 440],
+        "MIN_MAX_THRESHOLDS": ["3.5-6.0", "60-85", "420-450"],
+        "REMARKS": ["Normal", "Normal", "Normal"],
+        "Actual_Status": ["Healthy", "Healthy", "Healthy"]
     }
     return pd.DataFrame(data)
+
+# --------------------------------------------------------------
+# 🧾 Maintenance Log Management
+# --------------------------------------------------------------
+LOG_PATH = "data/maintenance_log.csv"
+
+def update_maintenance_log(mean_hi, next_inspection, interval):
+    os.makedirs("data", exist_ok=True)
+    entry = {
+        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "Mean_Health_Index": round(mean_hi, 3),
+        "Next_Inspection": next_inspection.strftime("%Y-%m-%d"),
+        "Interval": interval
+    }
+
+    if os.path.exists(LOG_PATH):
+        df_log = pd.read_csv(LOG_PATH)
+    else:
+        df_log = pd.DataFrame(columns=entry.keys())
+
+    df_log = pd.concat([df_log, pd.DataFrame([entry])], ignore_index=True)
+    df_log.to_csv(LOG_PATH, index=False)
+    return df_log
 
 # --------------------------------------------------------------
 # 📊 Main App Logic
@@ -138,47 +214,33 @@ if page == "Upload & Analyze Data":
 
     if uploaded_file:
         try:
-            # Detect encoding
             raw_data = uploaded_file.read()
             result = chardet.detect(raw_data)
-            detected_encoding = result["encoding"] or "utf-8"
-            st.info(f"Detected file encoding: {detected_encoding}")
+            encoding = result["encoding"] or "utf-8"
             uploaded_file.seek(0)
 
-            # Load data safely
             if uploaded_file.name.lower().endswith(".csv"):
-                df = pd.read_csv(uploaded_file, encoding=detected_encoding, on_bad_lines='skip')
+                df = pd.read_csv(uploaded_file, encoding=encoding, on_bad_lines='skip')
             else:
                 df = pd.read_excel(uploaded_file, engine="openpyxl")
 
-            # Clean column names
-            df.columns = (
-                df.columns.astype(str)
-                .str.strip()
-                .str.replace('\u2013', '-', regex=False)
-                .str.replace('\xa0', '', regex=False)
-                .str.replace(' ', '_')
-                .str.replace('-', '_')
-                .str.replace(r'[^0-9a-zA-Z_]', '', regex=True)
-            )
-
-            st.success("✅ File loaded and sanitized successfully!")
+            st.success("✅ File loaded successfully!")
             st.dataframe(df.head())
 
-            # Evaluate dataset
             results = evaluate_dataframe(df)
-            st.subheader("🔍 Computed Health Index and Predicted Status")
+            if "Status" not in results.columns and "Health_Index" in results.columns:
+                results["Status"] = pd.cut(results["Health_Index"],
+                                           bins=[-np.inf, 0.5, 0.8, np.inf],
+                                           labels=["Critical", "Warning", "Healthy"])
+
+            st.subheader("🔍 Computed Health Index and Status")
             st.dataframe(results.head(10))
 
             # Maintenance suggestions
-            st.subheader("🧭 Maintenance Recommendations")
             suggestions = maintenance_suggestions(results)
-            for s in suggestions:
-                st.markdown(f"- {s}")
 
-            # Visualizations
-            st.subheader("📊 Health Insights Dashboard")
-
+            # Visuals
+            st.subheader("📊 Health Index Dashboard")
             fig1, ax1 = plt.subplots()
             sns.histplot(results["Health_Index"], kde=True, bins=10, ax=ax1)
             ax1.set_title("Health Index Distribution")
@@ -187,17 +249,9 @@ if page == "Upload & Analyze Data":
             fig2, ax2 = plt.subplots()
             results["Status"].value_counts().plot(kind="pie", autopct="%1.1f%%", ax=ax2)
             ax2.set_ylabel("")
-            ax2.set_title("Equipment Status Breakdown")
+            ax2.set_title("Status Breakdown")
             st.pyplot(fig2)
 
-            if "SYNTHETIC_VALUE" in results.columns:
-                fig3, ax3 = plt.subplots()
-                sns.scatterplot(x="SYNTHETIC_VALUE", y="Health_Index", data=results, ax=ax3)
-                ax3.set_title("Working Value vs Health Index")
-                st.pyplot(fig3)
-
-            # Metrics Summary
-            st.subheader("📈 Model Performance Metrics")
             metrics = {
                 "Total Readings": len(df),
                 "Evaluated Readings": len(results),
@@ -209,52 +263,61 @@ if page == "Upload & Analyze Data":
             }
             st.table(pd.DataFrame(metrics.items(), columns=["Metric", "Value"]))
 
-            # Save charts for report
-            chart_buffers = {
-                "Health Index Distribution": BytesIO(),
-                "Equipment Status Breakdown": BytesIO()
-            }
-            fig1.savefig(chart_buffers["Health Index Distribution"], format="png")
-            fig2.savefig(chart_buffers["Equipment Status Breakdown"], format="png")
+            # Maintenance schedule in app
+            mean_hi = metrics["Mean HI"]
+            if mean_hi >= 0.8:
+                st.success("✅ Excellent performance. Next inspection in 60 days.")
+                next_date = datetime.now() + timedelta(days=60)
+                interval = "60 days"
+            elif mean_hi >= 0.6:
+                st.warning("⚠️ Moderate performance. Schedule inspection in 30 days.")
+                next_date = datetime.now() + timedelta(days=30)
+                interval = "30 days"
+            else:
+                st.error("🚨 Poor performance. Maintenance required within 7 days.")
+                next_date = datetime.now() + timedelta(days=7)
+                interval = "7 days"
 
-            # Generate PDF
+            # Update and show maintenance log
+            df_log = update_maintenance_log(mean_hi, next_date, interval)
+            st.subheader("🧾 Maintenance Log History (auto-updated)")
+            st.dataframe(df_log)
+            csv_log = df_log.to_csv(index=False).encode("utf-8")
+            st.download_button("📥 Download Maintenance Log (CSV)", csv_log, "maintenance_log.csv", "text/csv")
+
+            # PDF Report
+            chart_buffers = {"Health Index Distribution": BytesIO(), "Status Breakdown": BytesIO()}
+            fig1.savefig(chart_buffers["Health Index Distribution"], format="png")
+            fig2.savefig(chart_buffers["Status Breakdown"], format="png")
             pdf_buffer = generate_pdf_report(metrics, chart_buffers, suggestions)
-            st.download_button(
-                label="📥 Download Model Performance Report (PDF)",
-                data=pdf_buffer,
-                file_name="Naval_Machinery_Health_Report.pdf",
-                mime="application/pdf"
-            )
+
+            st.download_button("📘 Download Full Health Report (PDF)", pdf_buffer,
+                               file_name="Naval_Machinery_Health_Report.pdf", mime="application/pdf")
 
         except Exception as e:
             st.error(f"❌ Error processing file: {e}")
 
-# --------------------------------------------------------------
-# 🧪 Example Dataset
-# --------------------------------------------------------------
+elif page == "Maintenance Log History":
+    st.title("🧾 Maintenance Log History")
+    if os.path.exists(LOG_PATH):
+        df_log = pd.read_csv(LOG_PATH)
+        st.dataframe(df_log)
+        st.download_button("📥 Download Maintenance Log", df_log.to_csv(index=False), "maintenance_log.csv", "text/csv")
+    else:
+        st.warning("No maintenance log found yet. Upload and analyze a dataset first.")
+
 elif page == "Example Dataset Generator":
     st.title("🧪 Example Dataset Generator")
-    st.caption("Use this to test the model if you don't have a dataset.")
     df_sample = generate_example_dataset()
     st.dataframe(df_sample)
-    csv = df_sample.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Example Dataset", csv, "example_dataset.csv", "text/csv")
+    st.download_button("📥 Download Example Dataset", df_sample.to_csv(index=False), "example_dataset.csv", "text/csv")
 
-# --------------------------------------------------------------
-# ℹ️ About Section
-# --------------------------------------------------------------
 else:
     st.title("ℹ️ About This Application")
     st.markdown("""
-    This intelligent monitoring platform analyzes and predicts the operational health of naval ship machinery.  
-    It computes a **Health Index (HI)** from operational indicators and categorizes equipment into:
-    - 🟢 **Healthy** — Normal operational condition  
-    - 🟡 **Warning** — Requires attention  
-    - 🔴 **Critical** — Immediate maintenance required  
-
-    The app also generates **actionable maintenance recommendations** and allows users to **download a PDF report** 
-    summarizing performance and insights.  
+    This predictive maintenance platform monitors naval ship machinery using a computed **Health Index (HI)**.  
+    It provides real-time classification into **Healthy**, **Warning**, and **Critical** states, along with 
+    actionable **maintenance recommendations** and a **scheduling plan** for inspections.
 
     **Developed by Dr. Awujoola Olalekan (Naval Technical Command)**  
     """)
-
