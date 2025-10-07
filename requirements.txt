@@ -3,6 +3,7 @@ pandas
 numpy
 matplotlib
 seaborn
+scikit-learn
 fpdf
 openpyxl
 chardet
