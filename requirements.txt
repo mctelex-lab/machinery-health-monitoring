@@ -4,5 +4,5 @@ numpy
 matplotlib
 seaborn
 fpdf
-chardet
 openpyxl
+chardet
