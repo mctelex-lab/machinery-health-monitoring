@@ -1,588 +1,273 @@
-# app.py
 # ==============================================================
-# ⚓ Hybrid Predictive Maintenance App (Rule-based HI + RandomForest ML)
+# ⚓ Naval Machinery Health Monitoring Web App
 # ==============================================================
-
-import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), "src"))  # allow local src imports
+# Rule-based + Machine Learning Health Prediction
+# Generates charts, performance metrics, maintenance reports (PDF)
+# and logs all evaluations for historical tracking.
+# ==============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import seaborn as sns
-import chardet
-import pickle
-from io import BytesIO
-from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+import io, os, re, pickle
+from datetime import datetime
 from pathlib import Path
+from scipy.stats import skew, kurtosis
+from fpdf import FPDF
 
-# sklearn for metrics (ML comparison)
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+# Allow importing from local src folder
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 
-# local rule-based evaluator (must exist in src/evaluate_hi.py)
-from evaluate_hi import evaluate_dataframe
+# ==============================================================
+# 1️⃣ LOAD TRAINED MODEL
+# ==============================================================
 
-# -------- Basic configuration --------
-st.set_page_config(page_title="Naval Machinery Predictive Maintenance",
-                   page_icon="⚓",
-                   layout="wide")
+MODEL_PATH = Path("src/rf_model.pkl")
+model_bundle = None
+if MODEL_PATH.exists():
+    with open(MODEL_PATH, "rb") as f:
+        model_bundle = pickle.load(f)
 
-DATA_DIR = "data"
-LOG_PATH = os.path.join(DATA_DIR, "maintenance_log.csv")
-os.makedirs(DATA_DIR, exist_ok=True)
+# ==============================================================
+# 2️⃣ PAGE CONFIG
+# ==============================================================
 
-# -------- Helpers: I/O, sanitization, extraction --------
-def detect_encoding(file_bytes):
-    res = chardet.detect(file_bytes)
-    return res.get("encoding") or "utf-8"
+st.set_page_config(
+    page_title="Naval Machinery Health Monitoring System",
+    layout="wide",
+    page_icon="⚓"
+)
+st.title("⚓ Equipment Health Condition Monitoring for Naval Ships")
+st.caption("Developed by the Naval Data Science Team (Capt. Daya Abdullahi & Dr. Awujoola Olalekan J)")
 
-def sanitize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+# ==============================================================
+# 3️⃣ FILE UPLOAD
+# ==============================================================
+
+st.sidebar.header("Upload Machinery Data")
+uploaded = st.sidebar.file_uploader("Upload your dataset (CSV or Excel)", type=["csv", "xlsx"])
+
+mode = st.sidebar.radio("Choose Evaluation Mode:", ["Automatic Rule-based", "Machine Learning Prediction (Random Forest)"])
+
+# ==============================================================
+# 4️⃣ DATA LOADING & CLEANING
+# ==============================================================
+
+def load_dataset(file):
+    if file.name.endswith(".csv"):
+        df = pd.read_csv(file, encoding="latin-1", on_bad_lines="skip")
+    else:
+        import openpyxl
+        df = pd.read_excel(file, engine="openpyxl")
+
     df.columns = (
         df.columns.astype(str)
         .str.strip()
-        .str.replace('\u2013', '-', regex=False)
-        .str.replace('\xa0', '', regex=False)
-        .str.replace(' ', '_')
-        .str.replace('-', '_')
-        .str.replace(r'[^0-9a-zA-Z_]', '', regex=True)
+        .str.replace(" ", "_")
+        .str.replace("-", "_")
+        .str.replace(r"[^0-9a-zA-Z_]", "", regex=True)
     )
     return df
 
-def norm_key(s: str) -> str:
-    return ''.join(ch.lower() for ch in str(s) if ch.isalnum())
-
-def find_column(df: pd.DataFrame, candidates: list):
-    # return first matching column from df for any candidate token
-    cols_norm = {norm_key(c): c for c in df.columns}
-    for cand in candidates:
-        nk = norm_key(cand)
-        if nk in cols_norm:
-            return cols_norm[nk]
-    # try fuzzy contains
-    for cand in candidates:
-        nk = norm_key(cand)
-        for cn, col in cols_norm.items():
-            if nk in cn or cn in nk:
-                return col
-    return None
-
-import re
-def extract_numeric(val):
-    if pd.isna(val):
-        return np.nan
-    s = str(val)
-    m = re.search(r"[-+]?\d*\.\d+|\d+", s)
-    if m:
-        try:
-            return float(m.group(0))
-        except:
-            return np.nan
-    return np.nan
-
-def save_fig_to_temp(fig):
-    tmp = BytesIO()
-    fig.savefig(tmp, format="png", bbox_inches="tight")
-    tmp.seek(0)
-    plt.close(fig)
-    return tmp
-
-# -------- Maintenance log --------
-def append_maintenance_log(mean_hi, next_date, interval_label):
-    entry = {
-        "Record_Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Mean_Health_Index": round(float(mean_hi), 4) if not pd.isna(mean_hi) else "",
-        "Next_Inspection_Date": next_date.strftime("%Y-%m-%d"),
-        "Interval": interval_label
-    }
-    if os.path.exists(LOG_PATH):
-        df_log = pd.read_csv(LOG_PATH)
+def extract_min_max(s):
+    if pd.isna(s):
+        return (np.nan, np.nan)
+    nums = re.findall(r"[-+]?\d*\.\d+|\d+", str(s))
+    if len(nums) >= 2:
+        return float(nums[0]), float(nums[1])
+    elif len(nums) == 1:
+        return float(nums[0]), np.nan
     else:
-        df_log = pd.DataFrame(columns=list(entry.keys()))
-    df_log = pd.concat([df_log, pd.DataFrame([entry])], ignore_index=True)
-    df_log.to_csv(LOG_PATH, index=False)
-    return df_log
+        return (np.nan, np.nan)
 
-# -------- PDF generation (cover + metrics + charts + suggestions) --------
-from fpdf import FPDF
+def compute_health(row):
+    val, low, high = row["Working_Value"], row["Min_Threshold"], row["Max_Threshold"]
+    if np.isnan(val) or np.isnan(low) or np.isnan(high):
+        return np.nan, "Unknown"
+    if low <= val <= high:
+        return 1.0, "Healthy"
+    elif (low * 0.9) <= val <= (high * 1.1):
+        return 0.5, "Warning"
+    else:
+        return 0.0, "Critical"
 
-def generate_pdf(metrics_dict, interpretation, suggestions, charts: dict, authors="Navy Capt. Daya Abdullahi & Dr. Awujoola Olalekan J"):
+# ==============================================================
+# 5️⃣ PDF GENERATION (UTF-8 SAFE)
+# ==============================================================
+
+def generate_pdf(metrics_df, interpretation, suggestions, charts):
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-
-    # Cover
     pdf.add_page()
-    pdf.set_font("Arial", "B", 18)
-    pdf.cell(0, 12, "⚓ NAVAL MACHINERY HEALTH CONDITION REPORT", ln=True, align="C")
-    pdf.ln(6)
-    pdf.set_font("Arial", "", 14)
-    pdf.cell(0, 8, "Predictive Maintenance Model Summary", ln=True, align="C")
-    pdf.ln(8)
-    pdf.set_font("Arial", "", 11)
-    pdf.multi_cell(0, 7,
-                   f"Authors: {authors}\nDate generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\nConfidential: This document contains sensitive technical and operational data. Unauthorized distribution is prohibited.",
-                   align="C")
+    pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", uni=True)
+    pdf.set_font("DejaVu", size=14)
+    pdf.multi_cell(0, 10, "⚓ NAVAL MACHINERY HEALTH CONDITION REPORT", align="C")
+    pdf.set_font("DejaVu", size=12)
+    pdf.multi_cell(0, 8, "Predictive Maintenance Model Summary", align="C")
+    pdf.ln(10)
+    pdf.multi_cell(0, 8, "Authors: Navy Capt. Daya Abdullahi & Dr. Awujoola Olalekan J", align="C")
+    pdf.multi_cell(0, 8, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", align="C")
+    pdf.multi_cell(0, 8, "Confidential - For Maintenance Use Only", align="C")
 
-    # Metrics & interpretation
     pdf.add_page()
-    pdf.set_font("Arial", "B", 14)
+    pdf.set_font("DejaVu", size=12)
     pdf.cell(0, 10, "Model Performance Metrics", ln=True)
-    pdf.ln(4)
-    pdf.set_font("Arial", "", 11)
-    for k, v in metrics_dict.items():
-        pdf.cell(0, 8, f"{k}: {v}", ln=True)
+    pdf.ln(5)
+    for _, row in metrics_df.iterrows():
+        pdf.cell(0, 8, f"{row['Metric']}: {row['Value']}", ln=True)
 
-    pdf.ln(6)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, "Interpretation", ln=True)
-    pdf.set_font("Arial", "", 11)
-    pdf.multi_cell(0, 7, interpretation)
-    pdf.ln(6)
+    pdf.ln(8)
+    pdf.multi_cell(0, 8, "Interpretation:", align="L")
+    pdf.multi_cell(0, 8, interpretation)
+    pdf.ln(5)
+    pdf.multi_cell(0, 8, "Suggested Maintenance Actions:", align="L")
+    pdf.multi_cell(0, 8, suggestions)
 
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, "Maintenance Recommendations", ln=True)
-    pdf.set_font("Arial", "", 11)
-    for s in suggestions:
-        pdf.multi_cell(0, 7, "- " + s)
-    pdf.ln(6)
-
-    # charts
     pdf.add_page()
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "Analytical Visualizations", ln=True)
-    pdf.ln(6)
-    for title, buf in charts.items():
-        pdf.set_font("Arial", "I", 11)
-        pdf.cell(0, 8, title, ln=True)
-        try:
-            # write buffer to a temp file for FPDF.image
-            tmp_path = f"/tmp/{title.replace(' ','_')}.png"
-            with open(tmp_path, "wb") as f:
-                f.write(buf.getvalue())
-            pdf.image(tmp_path, x=10, w=190)
-            os.remove(tmp_path)
-        except Exception as e:
-            pdf.set_font("Arial", "", 10)
-            pdf.cell(0, 6, f"[Could not embed chart: {e}]", ln=True)
-        pdf.ln(6)
+    for name, chart in charts.items():
+        img_path = Path(f"{name}.png")
+        with open(img_path, "wb") as f:
+            f.write(chart.getbuffer())
+        pdf.image(str(img_path), x=10, w=180)
+        pdf.ln(10)
 
-    # page numbers
-    n_pages = pdf.page_no()
-    for p in range(1, n_pages + 1):
-        pdf.page = p
-        pdf.set_y(-12)
-        pdf.set_font("Arial", "I", 8)
-        pdf.cell(0, 10, f"Generated by Predictive Maintenance System | Page {p} of {n_pages}", 0, 0, "C")
+    out_file = "naval_machinery_health_report.pdf"
+    pdf.output(out_file)
+    return out_file
 
-    out = BytesIO()
-    pdf.output(out)
-    out.seek(0)
-    return out
+# ==============================================================
+# 6️⃣ MAIN LOGIC
+# ==============================================================
 
-# -------- UI: Sidebar, uploads, mode selection --------
-st.title("⚓ Naval Machinery Predictive Maintenance System")
-st.caption("Hybrid system: Rule-based Health Index (HI) and Random Forest ML predictions. Project Director Navy Capt Daya Abdullahi and Model Developer Dr. Awujoola Olalekan")
+if uploaded is not None:
+    df = load_dataset(uploaded)
 
-st.sidebar.header("Actions")
-mode = st.sidebar.radio("Choose mode:", ["Rule-based (HI thresholds)", "Machine Learning (Random Forest)", "Compare both"])
+    # Derive numeric columns
+    df[["Min_Threshold", "Max_Threshold"]] = df["MIN_MAX_THRESHOLDS"].apply(lambda x: pd.Series(extract_min_max(x)))
+    df["Working_Value"] = (
+        df["WORKING_VALUE_ONBOARD"]
+        .astype(str)
+        .str.replace(",", ".", regex=False)
+        .str.extract(r"([-+]?\d*\.\d+|\d+)")
+        .astype(float)
+    )
 
-uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel dataset", type=["csv", "xlsx"])
+    if mode == "Automatic Rule-based":
+        df[["Health_Index", "Predicted_Status"]] = df.apply(lambda x: pd.Series(compute_health(x)), axis=1)
 
-# -------- Load ML model bundle if available --------
-MODEL_PATH = Path("src/rf_model.pkl")
-ml_available = MODEL_PATH.exists()
-model_bundle = None
-if ml_available:
-    try:
-        with open(MODEL_PATH, "rb") as f:
-            model_bundle = pickle.load(f)
-        # Expecting a dict with keys: model, scaler, label_encoder, feature_columns (optional)
-        if not isinstance(model_bundle, dict) or "model" not in model_bundle:
-            st.sidebar.warning("rf_model.pkl found but in unexpected format. Expected dict with 'model'. ML mode may fail.")
-    except Exception as e:
-        st.sidebar.warning(f"Unable to load ML model: {e}")
-        ml_available = False
+    elif mode == "Machine Learning Prediction (Random Forest)" and model_bundle:
+        # Prepare features
+        df[["Min_Threshold", "Max_Threshold"]] = df["MIN_MAX_THRESHOLDS"].apply(lambda x: pd.Series(extract_min_max(x)))
+        df["Working_Value"] = (
+            df["WORKING_VALUE_ONBOARD"]
+            .astype(str)
+            .str.replace(",", ".", regex=False)
+            .str.extract(r"([-+]?\d*\.\d+|\d+)")
+            .astype(float)
+        )
+        def calc_hi(row):
+            v, lo, hi = row["Working_Value"], row["Min_Threshold"], row["Max_Threshold"]
+            if np.isnan(v) or np.isnan(lo) or np.isnan(hi): return np.nan
+            if lo <= v <= hi: return 1.0
+            elif (lo * 0.9) <= v <= (hi * 1.1): return 0.5
+            return 0.0
+        df["Health_Index"] = df.apply(calc_hi, axis=1)
 
-if not ml_available:
-    st.sidebar.info("No ML model found in src/rf_model.pkl — ML modes are disabled until a model bundle is added.")
+        X = df[["Working_Value", "Min_Threshold", "Max_Threshold", "Health_Index"]].fillna(0)
+        X_scaled = model_bundle["scaler"].transform(X)
+        preds = model_bundle["model"].predict(X_scaled)
+        df["Predicted_Status"] = model_bundle["label_encoder"].inverse_transform(preds)
 
-# -------- No file uploaded yet --------
-if uploaded_file is None:
-    st.info("Please upload your dataset (CSV or XLSX). Use Example Dataset in sidebar if needed.")
-    # provide example button
-    if st.sidebar.button("Download example dataset"):
-        example = pd.DataFrame({
-            "SYSTEM": ["Propulsion", "Cooling", "Auxiliary"],
-            "EQUIPMENT": ["Main Engine", "Cooling Pump", "Generator"],
-            "HEALTH INDICATOR (HI)": ["Lube oil pressure (bar)", "Oil temp (°C)", "Voltage (V)"],
-            "SYNTHETIC VALUE": [4.2, 78.0, 440.0],
-            "MIN–MAX THRESHOLDS": ["3.5 – 6.0", "60 – 90", "420 – 450"],
-            "WORKING VALUE ONBOARD": ["3.6 bar", "82 °C", "438 V"],
-            "REMARKS": ["Normal", "Slightly high", "Nominal"],
-            "Actual_Status": ["Healthy", "Warning", "Healthy"]
-        })
-        st.sidebar.download_button("Download example CSV", example.to_csv(index=False).encode("utf-8"), "example.csv", "text/csv")
-    st.stop()
+    # ==============================================================
+    # 📊 METRICS
+    # ==============================================================
+    total = len(df)
+    known = df["Health_Index"].notna().sum()
+    coverage = known / total * 100
+    hi_mean = df["Health_Index"].mean(skipna=True)
+    hi_std = df["Health_Index"].std(skipna=True)
+    hi_skew = skew(df["Health_Index"].dropna())
+    hi_kurt = kurtosis(df["Health_Index"].dropna())
 
-# -------- Read uploaded file robustly --------
-try:
-    raw = uploaded_file.read()
-    enc = detect_encoding(raw)
-    uploaded_file.seek(0)
-    if uploaded_file.name.lower().endswith(".csv"):
-        df = pd.read_csv(uploaded_file, encoding=enc, on_bad_lines="skip")
+    metrics = pd.DataFrame({
+        "Metric": ["Total Readings", "Evaluated Readings", "Coverage (%)", "Mean HI", "Std Dev HI", "Skewness", "Kurtosis"],
+        "Value": [total, known, round(coverage,2), round(hi_mean,3), round(hi_std,3), round(hi_skew,3), round(hi_kurt,3)]
+    })
+
+    st.subheader("📈 Model Performance Metrics")
+    st.dataframe(metrics, use_container_width=True)
+
+    # ==============================================================
+    # 📉 VISUALS
+    # ==============================================================
+    st.subheader("🔍 Visual Insights")
+    fig1, ax1 = plt.subplots(figsize=(6, 6))
+    df["Predicted_Status"].value_counts().plot.pie(autopct='%1.1f%%', startangle=90, colors=['#2ecc71', '#f1c40f', '#e74c3c'])
+    ax1.set_ylabel("")
+    ax1.set_title("Overall Condition Distribution")
+    st.pyplot(fig1)
+
+    fig2, ax2 = plt.subplots(figsize=(8, 5))
+    sns.histplot(df["Health_Index"].dropna(), bins=10, kde=True, ax=ax2)
+    ax2.set_title("Health Index Distribution")
+    st.pyplot(fig2)
+
+    fig3, ax3 = plt.subplots(figsize=(12, 6))
+    sns.barplot(x="HEALTH_INDICATOR_HI", y="Health_Index", hue="Predicted_Status", data=df, ax=ax3)
+    ax3.set_title("Health Index by Indicator")
+    ax3.tick_params(axis='x', rotation=90)
+    st.pyplot(fig3)
+
+    fig4, ax4 = plt.subplots(figsize=(8, 4))
+    sys_hi = df.groupby("SYSTEM")["Health_Index"].mean().to_frame()
+    sns.heatmap(sys_hi, annot=True, cmap="YlGnBu", linewidths=0.5, ax=ax4)
+    ax4.set_title("Average Health Index per System")
+    st.pyplot(fig4)
+
+    # Scatter plot
+    fig5, ax5 = plt.subplots(figsize=(8, 5))
+    sns.scatterplot(x="Working_Value", y="Health_Index", hue="Predicted_Status", data=df, ax=ax5)
+    ax5.set_title("Working Value vs. Health Index")
+    st.pyplot(fig5)
+
+    # ==============================================================
+    # 🧾 PDF REPORT
+    # ==============================================================
+    st.subheader("📘 Generate Detailed PDF Report")
+    interpretation = f"The average Health Index is {hi_mean:.2f}, indicating an overall {'healthy' if hi_mean>0.8 else 'moderate' if hi_mean>0.5 else 'critical'} condition."
+    suggestions = "Ensure routine inspection for all 'Warning' or 'Critical' systems. Schedule immediate maintenance for critical readings."
+
+    charts = {"fig1": io.BytesIO(), "fig2": io.BytesIO(), "fig3": io.BytesIO()}
+    fig1.savefig(charts["fig1"], format="png")
+    fig2.savefig(charts["fig2"], format="png")
+    fig3.savefig(charts["fig3"], format="png")
+
+    pdf_path = generate_pdf(metrics, interpretation, suggestions, charts)
+    with open(pdf_path, "rb") as pdf_file:
+        st.download_button("📥 Download PDF Report", data=pdf_file, file_name=pdf_path, mime="application/pdf")
+
+    # ==============================================================
+    # 🧠 Maintenance Log
+    # ==============================================================
+    st.subheader("🧭 Maintenance Log")
+    log_path = Path("maintenance_log.csv")
+    log_entry = pd.DataFrame([{
+        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Mean_HI": round(hi_mean, 3),
+        "Coverage_%": round(coverage, 2),
+        "Evaluation_Mode": mode
+    }])
+    if log_path.exists():
+        old_log = pd.read_csv(log_path)
+        new_log = pd.concat([old_log, log_entry], ignore_index=True)
     else:
-        df = pd.read_excel(uploaded_file, engine="openpyxl")
-except Exception as e:
-    st.error(f"Error reading file: {e}")
-    st.stop()
+        new_log = log_entry
+    new_log.to_csv(log_path, index=False)
+    st.dataframe(new_log.tail(10), use_container_width=True)
+    with open(log_path, "rb") as f:
+        st.download_button("💾 Download Maintenance Log", f, file_name="maintenance_log.csv")
 
-# sanitize columns
-df = sanitize_columns(df)
-
-# Attempt to find core columns
-synthetic_col = find_column(df, ["SYNTHETIC_VALUE", "SYNTHETIC VALUE", "WORKING_VALUE_ONBOARD", "WORKING VALUE ONBOARD", "WORKING_VALUE", "WORKING VALUE"])
-minmax_col = find_column(df, ["MIN_MAX_THRESHOLDS", "MIN–MAX_THRESHOLDS", "MIN_MAX", "MIN_MAX_THRESHOLDS", "THRESHOLDS"])
-hi_indicator_col = find_column(df, ["HEALTH_INDICATOR_HI", "HEALTH_INDICATOR", "HEALTH_INDICATOR_(HI)"])
-working_col = find_column(df, ["WORKING_VALUE_ONBOARD", "WORKING VALUE ONBOARD", "WORKING_VALUE", "WORKINGVALUE"])
-actual_status_col = find_column(df, ["ACTUAL_STATUS", "Actual_Status", "ActualStatus", "Actual_Status".lower()])
-
-# Ensure minmax exists
-if minmax_col is None:
-    st.error("Missing MIN–MAX THRESHOLDS column. Please include the 'MIN–MAX THRESHOLDS' column in your dataset.")
-    st.stop()
-
-# If synthetic numeric missing, try to extract from working_col
-if synthetic_col is None or synthetic_col not in df.columns:
-    if working_col is not None:
-        df["SYNTHETIC_VALUE"] = df[working_col].apply(extract_numeric)
-        synthetic_col = "SYNTHETIC_VALUE"
-        st.info("SYNTHETIC_VALUE not found; numeric values extracted from WORKING_VALUE_ONBOARD.")
-    else:
-        st.error("No numeric reading column found (SYNTHETIC_VALUE or WORKING_VALUE_ONBOARD).")
-        st.stop()
 else:
-    # coerce to numeric
-    df[synthetic_col] = pd.to_numeric(df[synthetic_col], errors="coerce")
-    if synthetic_col != "SYNTHETIC_VALUE":
-        df = df.rename(columns={synthetic_col: "SYNTHETIC_VALUE"})
-        synthetic_col = "SYNTHETIC_VALUE"
-
-# normalize minmax column name
-if minmax_col != "MIN_MAX_THRESHOLDS":
-    df = df.rename(columns={minmax_col: "MIN_MAX_THRESHOLDS"})
-    minmax_col = "MIN_MAX_THRESHOLDS"
-
-# rename indicator and working columns if found
-if hi_indicator_col and hi_indicator_col != "HEALTH_INDICATOR_HI":
-    df = df.rename(columns={hi_indicator_col: "HEALTH_INDICATOR_HI"})
-if working_col and working_col != "WORKING_VALUE_ONBOARD":
-    df = df.rename(columns={working_col: "WORKING_VALUE_ONBOARD"})
-if actual_status_col and actual_status_col != "Actual_Status":
-    df = df.rename(columns={actual_status_col: "Actual_Status"})
-
-# show preview
-st.subheader("Sanitized dataset preview")
-st.dataframe(df.head(8))
-
-# -------- Run rule-based evaluator --------
-rule_results = None
-try:
-    rule_results = evaluate_dataframe(df)
-    # make sure it has columns Health_Index and Status
-    if "Health_Index" not in rule_results.columns:
-        st.warning("Rule evaluator returned no Health_Index. The rule-based output may be incomplete.")
-except Exception as e:
-    st.error(f"Rule-based evaluator error: {e}")
-
-# -------- Run ML prediction if requested and available --------
-ml_results = None
-if mode in ["Machine Learning (Random Forest)", "Compare both"]:
-    if not ml_available:
-        st.warning("ML model not available; please upload rf_model.pkl to src/ to enable ML mode.")
-    else:
-        # prepare numeric features for model
-        try:
-            model = model_bundle.get("model")
-            scaler = model_bundle.get("scaler")
-            le = model_bundle.get("label_encoder", None)
-            feature_columns = model_bundle.get("feature_columns", None)  # optional list of feature names
-
-            # Determine features
-            if feature_columns and all(col in df.columns for col in feature_columns):
-                X = df[feature_columns].copy()
-            else:
-                # fallback to numeric columns in df
-                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-                if not numeric_cols:
-                    st.error("No numeric features available for ML prediction.")
-                X = df[numeric_cols].copy()
-                feature_columns = numeric_cols
-
-            # Fill NA and scale
-            X = X.fillna(X.mean())
-            if scaler is not None:
-                X_scaled = scaler.transform(X)
-            else:
-                X_scaled = X.values
-
-            y_pred = model.predict(X_scaled)
-            if le is not None:
-                y_pred_labels = le.inverse_transform(y_pred)
-            else:
-                y_pred_labels = y_pred.astype(str)
-
-            ml_results = df.copy()
-            ml_results["ML_Predicted_Status"] = y_pred_labels
-
-            # If model gives probabilities, include them
-            if hasattr(model, "predict_proba"):
-                proba = model.predict_proba(X_scaled)
-                # keep class-proba mapping if label encoder present
-                if le is not None:
-                    classes = le.inverse_transform(np.arange(proba.shape[1]))
-                else:
-                    classes = [f"class_{i}" for i in range(proba.shape[1])]
-                for idx, cls in enumerate(classes):
-                    ml_results[f"prob_{cls}"] = proba[:, idx]
-
-            st.success("ML prediction completed.")
-        except Exception as e:
-            st.error(f"Error during ML prediction: {e}")
-            ml_results = None
-
-# -------- Display outputs depending on mode --------
-st.header("Results")
-
-# Utility: create charts for PDF (store buffers)
-chart_buffers = {}
-
-def generate_common_visuals(results_df, prefix=""):
-    bufs = {}
-    # HI distribution
-    if "Health_Index" in results_df.columns:
-        fig, ax = plt.subplots(figsize=(8,4))
-        sns.histplot(results_df["Health_Index"].dropna(), bins=10, kde=True, ax=ax)
-        ax.set_title("Health Index Distribution")
-        buf = save_fig_to_temp(fig) if False else save_fig_buf(fig)
-        plt.close(fig)
-    return bufs
-
-# small helper using BytesIO (we used save_fig_to_temp earlier; define alternative)
-def save_fig_buf(fig):
-    buf = BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    buf.seek(0)
-    plt.close(fig)
-    return buf
-
-# show rule-based if selected
-if mode in ["Rule-based (HI thresholds)", "Compare both"]:
-    st.subheader("Rule-based Health Index Evaluation")
-    if rule_results is None:
-        st.error("Rule-based evaluation not available.")
-    else:
-        st.dataframe(rule_results.head(10))
-
-        # Visuals for rule-based
-        col1, col2 = st.columns(2)
-        with col1:
-            if "Health_Index" in rule_results.columns:
-                fig1, ax1 = plt.subplots()
-                sns.histplot(rule_results["Health_Index"].dropna(), bins=10, kde=True, ax=ax1)
-                ax1.set_title("Health Index Distribution")
-                st.pyplot(fig1)
-                chart_buffers["Rule_HI_Distribution"] = save_fig_buf(fig1)
-            else:
-                st.info("No Health_Index for rule-based results.")
-
-        with col2:
-            if "Status" in rule_results.columns:
-                fig2, ax2 = plt.subplots()
-                rule_results["Status"].value_counts().plot(kind="pie", autopct="%1.1f%%", ax=ax2)
-                ax2.set_ylabel("")
-                ax2.set_title("Status Breakdown (Rule-based)")
-                st.pyplot(fig2)
-                chart_buffers["Rule_Status_Breakdown"] = save_fig_buf(fig2)
-            else:
-                st.info("No Status for rule-based results.")
-
-        # HI by indicator
-        if "HEALTH_INDICATOR_HI" in rule_results.columns and "Health_Index" in rule_results.columns:
-            fig3, ax3 = plt.subplots(figsize=(10,6))
-            sns.barplot(data=rule_results, y="HEALTH_INDICATOR_HI", x="Health_Index", orient="h", ax=ax3)
-            ax3.set_title("Health Index by Indicator (Rule-based)")
-            st.pyplot(fig3)
-            chart_buffers["Rule_HI_by_Indicator"] = save_fig_buf(fig3)
-
-        # Average HI per System heatmap
-        if "SYSTEM" in rule_results.columns and "Health_Index" in rule_results.columns:
-            sys_hi = rule_results.groupby("SYSTEM")["Health_Index"].mean().to_frame()
-            fig4, ax4 = plt.subplots(figsize=(8,4))
-            sns.heatmap(sys_hi, annot=True, cmap="YlGnBu", linewidths=0.5, ax=ax4)
-            ax4.set_title("Average Health Index per System (Rule-based)")
-            st.pyplot(fig4)
-            chart_buffers["Rule_Avg_HI_per_System"] = save_fig_buf(fig4)
-
-        # Scatter: Working vs HI
-        if "SYNTHETIC_VALUE" in rule_results.columns and "Health_Index" in rule_results.columns:
-            fig5, ax5 = plt.subplots(figsize=(8,5))
-            sns.scatterplot(x=rule_results["SYNTHETIC_VALUE"], y=rule_results["Health_Index"], hue=rule_results.get("Status"), ax=ax5)
-            ax5.set_title("Working Value vs Health Index (Rule-based)")
-            st.pyplot(fig5)
-            chart_buffers["Rule_Working_vs_HI"] = save_fig_buf(fig5)
-
-# show ML results if selected
-if mode in ["Machine Learning (Random Forest)", "Compare both"]:
-    st.subheader("Machine Learning Prediction (Random Forest)")
-    if ml_results is None:
-        st.warning("ML results not available.")
-    else:
-        st.dataframe(ml_results.head(10))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            # predicted distribution
-            figm1, axm1 = plt.subplots()
-            ml_results["ML_Predicted_Status"].value_counts().plot(kind="bar", ax=axm1)
-            axm1.set_title("ML Predicted Status Distribution")
-            st.pyplot(figm1)
-            chart_buffers["ML_Status_Bar"] = save_fig_buf(figm1)
-
-        with col2:
-            # if actual status exists, compute confusion/accuracy
-            if "Actual_Status" in ml_results.columns:
-                y_true = ml_results["Actual_Status"].astype(str)
-                y_pred = ml_results["ML_Predicted_Status"].astype(str)
-                try:
-                    acc = accuracy_score(y_true, y_pred)
-                    st.metric("ML Accuracy", f"{acc:.3f}")
-                    cm = confusion_matrix(y_true, y_pred, labels=np.unique(np.concatenate([y_true.unique(), y_pred.unique()])))
-                    figcm, axcm = plt.subplots(figsize=(5,4))
-                    sns.heatmap(cm, annot=True, fmt="d", ax=axcm,
-                                xticklabels=np.unique(np.concatenate([y_true.unique(), y_pred.unique()])),
-                                yticklabels=np.unique(np.concatenate([y_true.unique(), y_pred.unique()])))
-                    axcm.set_xlabel("Predicted")
-                    axcm.set_ylabel("Actual")
-                    axcm.set_title("Confusion Matrix (ML)")
-                    st.pyplot(figcm)
-                    chart_buffers["ML_Confusion_Matrix"] = save_fig_buf(figcm)
-                except Exception as e:
-                    st.info(f"Could not compute ML metrics: {e}")
-            else:
-                st.info("Actual_Status not present — cannot compute ML accuracy/confusion matrix.")
-
-# Compare both side-by-side if chosen
-if mode == "Compare both":
-    st.subheader("Comparison: Rule-based vs ML (side-by-side)")
-
-    if rule_results is None or ml_results is None:
-        st.info("Both results are required for comparison. Ensure ML model is available and runable.")
-    else:
-        # merge by index
-        comp = rule_results.copy()
-        comp = comp.rename(columns={"Status": "Rule_Status", "Health_Index": "Rule_Health_Index"})
-        comp["ML_Predicted_Status"] = ml_results["ML_Predicted_Status"].values
-        # show sample and comparison metrics
-        st.dataframe(comp.head(10))
-
-        # If Actual_Status exists, compute per-mode accuracy
-        if "Actual_Status" in comp.columns:
-            y_true = comp["Actual_Status"].astype(str)
-            rule_y = comp["Rule_Status"].astype(str)
-            ml_y = comp["ML_Predicted_Status"].astype(str)
-            try:
-                rule_acc = accuracy_score(y_true, rule_y)
-                ml_acc = accuracy_score(y_true, ml_y)
-                st.write(f"Rule-based Accuracy: {rule_acc:.3f} | ML Accuracy: {ml_acc:.3f}")
-                st.write("Classification report (ML):")
-                st.text(classification_report(y_true, ml_y))
-            except Exception as e:
-                st.info(f"Could not compute comparison metrics: {e}")
-        else:
-            st.info("No Actual_Status to compute accuracy. Comparison is limited to predicted labels.")
-
-# -------- Metrics summary for report, maintenance schedule, and log --------
-# Create metrics using rule_results as base if present, otherwise ML
-base_results = rule_results if rule_results is not None else (ml_results if ml_results is not None else None)
-
-if base_results is not None and "Health_Index" in base_results.columns:
-    mean_hi = float(base_results["Health_Index"].mean())
-else:
-    mean_hi = np.nan
-
-metrics_for_report = {
-    "Total Readings": int(len(df)),
-    "Evaluated Readings": int(base_results["Health_Index"].notna().sum()) if base_results is not None and "Health_Index" in base_results.columns else 0,
-    "Coverage (%)": round((base_results["Health_Index"].notna().sum() / len(df) * 100) if base_results is not None and len(df)>0 else 0, 2),
-    "Mean HI": round(mean_hi, 4) if not np.isnan(mean_hi) else "N/A",
-    "Std Dev HI": round(float(base_results["Health_Index"].std()), 4) if base_results is not None and "Health_Index" in base_results.columns else "N/A",
-    "Skewness": round(float(base_results["Health_Index"].skew()), 4) if base_results is not None and "Health_Index" in base_results.columns else "N/A",
-    "Kurtosis": round(float(base_results["Health_Index"].kurtosis()), 4) if base_results is not None and "Health_Index" in base_results.columns else "N/A"
-}
-
-# Interpretation & suggestions
-if not pd.isna(mean_hi):
-    if mean_hi >= 0.8:
-        interpretation = "Overall fleet health is excellent."
-        next_dt = datetime.now() + timedelta(days=60)
-        interval_label = "60 days"
-    elif mean_hi >= 0.6:
-        interpretation = "Overall fleet health is satisfactory; schedule preventive maintenance."
-        next_dt = datetime.now() + timedelta(days=30)
-        interval_label = "30 days"
-    else:
-        interpretation = "Overall fleet health is poor; immediate maintenance required."
-        next_dt = datetime.now() + timedelta(days=7)
-        interval_label = "7 days"
-else:
-    interpretation = "Insufficient data to interpret."
-    next_dt = datetime.now()
-    interval_label = "N/A"
-
-# generate suggestions list
-suggestions = []
-if base_results is not None and "Status" in base_results.columns:
-    if base_results["Status"].value_counts().get("Critical", 0) > 0:
-        suggestions.append("Immediate inspection required for systems flagged Critical.")
-    if base_results["Status"].value_counts().get("Warning", 0) > 0:
-        suggestions.append("Schedule maintenance for Warning systems.")
-if not suggestions:
-    suggestions.append("No urgent maintenance required; continue routine inspections.")
-
-# append maintenance log
-df_log = append_maintenance_log(mean_hi, next_dt, interval_label)
-
-# display maintenance schedule and log
-st.subheader("Maintenance Schedule Recommendation")
-if not pd.isna(mean_hi):
-    if mean_hi >= 0.8:
-        st.success(f"Next inspection recommended: {next_dt.strftime('%Y-%m-%d')} (60 days)")
-    elif mean_hi >= 0.6:
-        st.warning(f"Next inspection recommended: {next_dt.strftime('%Y-%m-%d')} (30 days)")
-    else:
-        st.error(f"Next inspection recommended: {next_dt.strftime('%Y-%m-%d')} (7 days) - Immediate action required")
-else:
-    st.info("No maintenance schedule due to insufficient data.")
-
-st.subheader("Maintenance Log (most recent entries)")
-if os.path.exists(LOG_PATH):
-    st.dataframe(pd.read_csv(LOG_PATH).tail(10))
-    st.download_button("Download maintenance log (CSV)", pd.read_csv(LOG_PATH).to_csv(index=False).encode("utf-8"), "maintenance_log.csv", "text/csv")
-else:
-    st.info("No maintenance log yet.")
-
-# -------- Report generation --------
-st.subheader("Download Unified PDF Report")
-
-if st.button("Generate PDF Report (cover + metrics + suggestions + charts)"):
-    # choose which charts to embed: prefer rule charts then ml charts
-    charts_for_pdf = {}
-    for k, v in chart_buffers.items():
-        charts_for_pdf[k] = v
-    pdf_bytes = generate_pdf(metrics_for_report, interpretation, suggestions, charts_for_pdf)
-    st.download_button("Click to download PDF", pdf_bytes.getvalue(), "Naval_Machinery_Health_Report.pdf", "application/pdf")
-
-# cleanup (nothing left to remove since we used in-memory buffers)
-st.caption("Report: Cover page with title & authors, subsequent pages with metrics, interpretation, suggestions, charts, footer & page numbers.")
+    st.info("Please upload a dataset to begin analysis.")

@@ -1,9 +1,27 @@
-streamlit
-pandas
-numpy
-matplotlib
-seaborn
-scikit-learn
-fpdf
-openpyxl
-chardet
+# --- Core web app ---
+streamlit==1.37.0
+
+# --- Data analysis & preprocessing ---
+pandas==2.2.2
+numpy==1.26.4
+chardet==5.2.0
+openpyxl==3.1.5
+
+# --- Visualization ---
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# --- Machine Learning ---
+scikit-learn==1.5.2
+scipy==1.13.1
+
+# --- PDF Generation ---
+fpdf==1.7.2
+
+# --- System / font support ---
+Pillow==10.4.0
+# Ensure DejaVu font availability (used for UTF-8 PDF output)
+# If Streamlit Cloud doesn't have it, include /fonts/DejaVuSans.ttf in repo
+
+# --- Others ---
+pathlib
