@@ -1,7 +1,29 @@
-__pycache__/
+# --- Python / Streamlit App Ignore File ---
+venv/
+env/
 *.pyc
-.env
+__pycache__/
+*.pkl
+.DS_Store
+*.log
 .ipynb_checkpoints/
 data/*.csv
-reports/*.pdf
+data/*.xlsx
+
+# Virtual environment folders
+.venv/
+env/
+lexenv/
+navalml/
+machinery-health-monitoring-env/
+*.egg-info/
+build/
+dist/
+
+# IDE files
 .vscode/
+.idea/
+*.iml
+
+# OS files
+Thumbs.db

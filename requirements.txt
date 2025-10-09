@@ -3,7 +3,7 @@ streamlit==1.37.0
 
 # --- Data analysis & preprocessing ---
 pandas==2.2.2
-numpy==1.26.0  # ✅ Prebuilt binary (no need to compile)
+numpy==1.26.0
 chardet==5.2.0
 openpyxl==3.1.5
 
@@ -12,11 +12,12 @@ matplotlib==3.9.0
 seaborn==0.13.2
 
 # --- Machine Learning ---
-scikit-learn==1.4.2
-scipy==1.11.4  # ✅ Prebuilt wheel that works on Streamlit Cloud
+# Newer sklearn removes monotonic_cst bug
+scikit-learn>=1.5.0
+scipy==1.11.4
 
 # --- PDF Generation ---
-fpdf==1.7.2
+fpdf2==2.7.9
 
 # --- System / font support ---
 Pillow==10.3.0
