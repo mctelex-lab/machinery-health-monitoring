@@ -45,7 +45,7 @@ st.title("⚓ Equipment Health Condition Monitoring for Naval Ships")
 st.write("Predictive maintenance prototype — rule-based + machine learning. ")
 with st.sidebar:
     st.header("About")
-    st.markdown("**Developed by:** Dr. Awujoola Olalekan")
+    st.markdown("**Developed by:** Navy Capt. Daya Abdullahi & Dr. Awujoola Olalekan J")
     st.markdown("This tool supports manual CSV/XLSX inputs and (optionally) a pre-trained RandomForest model saved at `src/rf_model.pkl` for ML predictions.")
     st.markdown("---")
 
