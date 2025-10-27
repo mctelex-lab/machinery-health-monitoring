@@ -3,7 +3,7 @@ streamlit==1.37.0
 
 # --- Data analysis & preprocessing ---
 pandas==2.2.2
-numpy==1.26.0
+numpy==1.26.4
 chardet==5.2.0
 openpyxl==3.1.5
 
@@ -12,7 +12,7 @@ matplotlib==3.9.0
 seaborn==0.13.2
 
 # --- Machine Learning ---
-# Newer sklearn removes monotonic_cst bug
+# Compatible with Python 3.11–3.13
 scikit-learn>=1.5.0
 scipy==1.11.4
 
@@ -20,5 +20,6 @@ scipy==1.11.4
 fpdf2==2.7.9
 
 # --- System / font support ---
-Pillow==10.3.0
+# Pillow 11+ includes wheels for Python 3.13
+Pillow>=11.0.0
 pathlib
