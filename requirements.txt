@@ -22,3 +22,6 @@ fpdf2==2.7.9
 # --- System / font support ---
 Pillow==10.2.0
 pathlib
+
+
+
